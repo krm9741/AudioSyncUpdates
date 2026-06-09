@@ -1,9 +1,9 @@
-#New Code
 import traceback
 import sys
 import time
 import socket
 import audioop
+import json
 import subprocess
 
 from threading import Thread
@@ -11,10 +11,17 @@ from six.moves import queue
 
 import pyaudio
 import os
+import re
+import firebase_admin
+from firebase_admin import credentials as credi
+from firebase_admin import db
+from datetime import datetime
 
-os.chdir("/home/ITK/30052025")
+os.chdir("/opt/FinalCode")
+SETTINGS_FILE = "/opt/FinalCode/display_settings.json"
 
 from PyQt5.QtWidgets import (
+    QColorDialog,
     QApplication,
     QSizePolicy,
     QHBoxLayout,
@@ -42,9 +49,10 @@ from PyQt5.QtCore import (
 
 from PyQt5.QtGui import (
     QFont,
-    QPixmap,
-    QMovie
+    QPixmap
 )
+from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QSize
 
 from google.cloud import speech
 from google.oauth2 import service_account
@@ -93,13 +101,31 @@ except Exception:
 
 
 credentials = service_account.Credentials.from_service_account_file(
-    "/home/ITK/30052025/audiasync-project-050825-de67120821a2.json"
+    "/opt/FinalCode/audiasync-project-050825-de67120821a2.json"
 )
 
 client = speech.SpeechClient(
     credentials=credentials,
     client_options={"api_endpoint": "speech.googleapis.com"}
 )
+
+cred = credi.Certificate("/opt/FinalCode/FirebaseKey.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://fssdp1-85222-default-rtdb.firebaseio.com/'
+})
+ref = db.reference('/subscribers')
+
+def get_mac_address():
+    try:
+        output = subprocess.check_output("ifconfig", shell=True, text=True)
+        mac_address = re.search(r"ether\s([0-9a-fA-F:]+)", output).group(1)
+        return mac_address
+    except subprocess.CalledProcessError:
+        return "Error: Unable to run ifconfig command."
+    except AttributeError:
+        return "Error: MAC address not found in ifconfig output."
+mac=get_mac_address()
+mac = mac.replace(":", "-")
 
 inactivityduration = 30
 
@@ -301,7 +327,123 @@ class WifiDialog(QDialog):
             )
 
 
+class SetupPasswordDialog(QDialog):
 
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+        self.setWindowTitle("Setup Access")
+        self.setFixedSize(350, 180)
+
+        layout = QVBoxLayout()
+
+        title = QLabel("Enter Setup Password")
+        title.setAlignment(Qt.AlignCenter)
+
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+
+        login_btn = QPushButton("Login")
+
+        layout.addWidget(title)
+        layout.addWidget(self.password_edit)
+        layout.addWidget(login_btn)
+
+        self.setLayout(layout)
+
+        login_btn.clicked.connect(
+            self.validate_password
+        )
+
+    def validate_password(self):
+
+        SETUP_PASSWORD = "1234"
+
+        if self.password_edit.text() == SETUP_PASSWORD:
+            self.accept()
+        else:
+            QMessageBox.warning(
+                self,
+                "Access Denied",
+                "Wrong Password"
+            )
+
+class SetupMenuDialog(QDialog):
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+        self.parent_window = parent
+
+        self.setWindowTitle("Setup")
+        self.setFixedSize(450, 250)
+
+        layout = QVBoxLayout()
+
+        title = QLabel("Setup Options")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("Arial", 18))
+
+        layout.addWidget(title)
+
+        button_layout = QHBoxLayout()
+
+        wifi_btn = QPushButton()
+        text_btn = QPushButton()
+        bg_btn = QPushButton()
+
+        wifi_btn.setIcon(QIcon("/opt/FinalCode/WifiSetupIcon.png"))
+        text_btn.setIcon(QIcon("/opt/FinalCode/TextColorIcon.png"))
+        bg_btn.setIcon(QIcon("/opt/FinalCode/BackgroundColorIcon.png"))
+
+        wifi_btn.setIconSize(QSize(80, 80))
+        text_btn.setIconSize(QSize(80, 80))
+        bg_btn.setIconSize(QSize(80, 80))
+
+        wifi_btn.setFixedSize(120, 120)
+        text_btn.setFixedSize(120, 120)
+        bg_btn.setFixedSize(120, 120)
+
+        button_layout.addWidget(wifi_btn)
+        button_layout.addWidget(text_btn)
+        button_layout.addWidget(bg_btn)
+
+        layout.addLayout(button_layout)
+
+        self.setLayout(layout)
+
+        wifi_btn.clicked.connect(self.open_wifi)
+        text_btn.clicked.connect(self.change_text_color)
+        bg_btn.clicked.connect(self.change_background_color) 
+
+    def open_wifi(self):
+
+        wifi_dialog = WifiDialog(self)
+        wifi_dialog.exec_()
+
+    def change_text_color(self):
+
+        color = QColorDialog.getColor()
+
+        if color.isValid():
+
+            self.parent_window.text_color = color.name()
+
+            self.parent_window.apply_colors()
+            self.parent_window.save_settings()
+
+    def change_background_color(self):
+
+        color = QColorDialog.getColor()
+
+        if color.isValid():
+
+            self.parent_window.background_color = color.name()
+
+            self.parent_window.apply_colors()
+            self.parent_window.save_settings()
 # =========================================================
 # MAIN APPLICATION
 # =========================================================
@@ -316,6 +458,7 @@ class SpeechToTextApp(QMainWindow):
 
         self.voice_detected_time = 0
         self.voice_active = False
+        self.load_settings()
 
         self.labels = []
 
@@ -343,42 +486,65 @@ class SpeechToTextApp(QMainWindow):
             screen_rect.width(),
             screen_rect.height()
         )
+        
+        self.init_main_ui()
 
-        self.splash_label = QLabel(self)
+    def load_settings(self):
 
-        self.splash_label.setAlignment(Qt.AlignCenter)
+        try:
 
-        self.splash_movie = QMovie("/home/ITK/30052025/AudiaSyncIcon.gif")
+            with open(SETTINGS_FILE, "r") as f:
 
-        self.splash_movie.setScaledSize(screen_rect.size())
+                settings = json.load(f)
 
-        self.splash_label.setMovie(self.splash_movie)
+                self.text_color = settings.get(
+                    "text_color",
+                    "white"
+                )
 
-        self.splash_label.setGeometry(
-            0,
-            0,
-            screen_rect.width(),
-            screen_rect.height()
-        )
+                self.background_color = settings.get(
+                    "background_color",
+                    "black"
+                )
 
-        self.splash_movie.start()
+        except Exception:
 
-        self.splash_label.show()
+            self.text_color = "white"
+            self.background_color = "black"
+    def apply_colors(self):
+        self.container.setStyleSheet(f"""
+            background-color: {self.background_color};
+            color: {self.text_color};
+        """)
 
-        self.splash_duration = 10000
+        self.label.setStyleSheet(f"""
+            color: {self.text_color};
+            background-color: transparent;
+        """)
 
-        QTimer.singleShot(
-            self.splash_duration,
-            self.init_main_ui
-        )
 
-        self.splash_movie.finished.connect(
-            self.init_main_ui
-        )
+    def save_settings(self):
+
+        try:
+
+            settings = {
+                "text_color": self.text_color,
+                "background_color": self.background_color
+            }
+
+            with open(SETTINGS_FILE, "w") as f:
+
+                json.dump(
+                    settings,
+                    f,
+                    indent=4
+                )
+
+        except Exception as e:
+
+            print("Settings Save Error:", e)
 
     def init_main_ui(self):
-
-        self.splash_label.hide()
 
         self.label = QLabel(
             "Press Button To Start Service Welcome to AudioSync ...",
@@ -402,10 +568,11 @@ class SpeechToTextApp(QMainWindow):
         self._internet_timer.start(2000)
 
         self.image_paths = [
-            '/home/ITK/30052025/AudiaSyncIcon.png',
-            '/home/ITK/30052025/MicIcon.png',
-            '/home/ITK/30052025/MonitorDIsplayIcon.png',
-            '/home/ITK/30052025/WifiTransmittingIcon.png'
+            '/opt/FinalCode/AudiaSyncIcon.png',
+            '/opt/FinalCode/MicIcon.png',
+            '/opt/FinalCode/MonitorDIsplayIcon.png',
+            '/opt/FinalCode/WifiTransmittingIcon.png',
+            '/opt/FinalCode/Setupicon.png'
         ]
 
         scroll_area = QScrollArea(self)
@@ -420,11 +587,12 @@ class SpeechToTextApp(QMainWindow):
 
         for path in self.image_paths:
 
-            label = QLabel()
-            if path == '/home/ITK/30052025/WifiTransmittingIcon.png':
+            if path == '/opt/FinalCode/Setupicon.png':
                 label = ClickableLabel()
-                label.clicked.connect(self.open_wifi_dialog)
+                label.clicked.connect(self.open_setup_dialog)
+
             else:
+
                 label = QLabel()
 
             pixmap = QPixmap(path)
@@ -472,10 +640,10 @@ class SpeechToTextApp(QMainWindow):
 
         self.container.setLayout(layout)
 
-        self.container.setStyleSheet("""
-            background-color: black;
-            color: white;
-        """)
+        #self.container.setStyleSheet("""
+        #    background-color: black;
+        #    color: white;
+        #""")
 
         self.setCentralWidget(self.container)
 
@@ -500,6 +668,17 @@ class SpeechToTextApp(QMainWindow):
         )
 
         QTimer.singleShot(1000, self.wait_for_trigger)
+        self.apply_colors()
+    
+    def open_setup_dialog(self):
+
+        password_dialog = SetupPasswordDialog(self)
+
+        if password_dialog.exec_() == QDialog.Accepted:
+
+            setup_dialog = SetupMenuDialog(self)
+
+            setup_dialog.exec_()
 
     # =========================================================
     # OPEN WIFI WINDOW
@@ -657,7 +836,7 @@ class SpeechToTextApp(QMainWindow):
 
                 self.voice_active = False
 
-                new_pixmap = QPixmap("/home/ITK/30052025/MicIcon.png")
+                new_pixmap = QPixmap("/opt/FinalCode/MicIcon.png")
 
                 self.labels[1].setPixmap(
                     new_pixmap.scaled(
@@ -699,10 +878,10 @@ class SpeechToTextApp(QMainWindow):
         self._is_connected = connected
 
         pixmap_path = (
-            "/home/ITK/30052025/WifiTransmittingIcon.png"
+            "/opt/FinalCode/WifiTransmittingIcon.png"
             if connected
             else
-            "/home/ITK/30052025/WifiDisconnectedIcon.png"
+            "/opt/FinalCode/WifiDisconnectedIcon.png"
         )
 
         new_pixmap = QPixmap(pixmap_path)
@@ -783,7 +962,7 @@ class SpeechToTextApp(QMainWindow):
 
                 self.text_signal.emit(transcript)
 
-                new_pixmap = QPixmap("/home/ITK/30052025/MicIcon.png")
+                new_pixmap = QPixmap("/opt/FinalCode/MicIcon.png")
 
                 self.labels[1].setPixmap(
                     new_pixmap.scaled(
@@ -835,7 +1014,7 @@ class SpeechToTextApp(QMainWindow):
 
     def on_audio_detected(self):
 
-        new_pixmap = QPixmap("/home/ITK/30052025/MicBlue.png")
+        new_pixmap = QPixmap("/opt/FinalCode/MicBlue.png")
 
         self.labels[1].setPixmap(
             new_pixmap.scaled(
