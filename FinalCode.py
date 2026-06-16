@@ -12,7 +12,9 @@ from six.moves import queue
 import pyaudio
 import os
 import re
-import requests
+import firebase_admin
+from firebase_admin import credentials as credi
+from firebase_admin import db
 from datetime import datetime
 
 os.chdir("/opt/FinalCode")
@@ -107,10 +109,14 @@ client = speech.SpeechClient(
     client_options={"api_endpoint": "speech.googleapis.com"}
 )
 
+cred = credi.Certificate("/opt/FinalCode/FirebaseKey.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://fssdp1-85222-default-rtdb.firebaseio.com/'
+})
+ref = db.reference('/subscribers')
 
 def get_mac_address():
     try:
-        print("Getting MAC Address",flush=True)
         output = subprocess.check_output("ifconfig", shell=True, text=True)
         mac_address = re.search(r"ether\s([0-9a-fA-F:]+)", output).group(1)
         return mac_address
@@ -120,27 +126,10 @@ def get_mac_address():
         return "Error: MAC address not found in ifconfig output."
 mac=get_mac_address()
 mac = mac.replace(":", "-")
-print(mac,flush=True)
 
 inactivityduration = 30
 
-def get_local_expiry():
-
-    try:
-        print("Getting Expiry data from Local",flush=True)
-
-        with open(
-            "/opt/FinalCode/subscription.json",
-            "r"
-        ) as f:
-
-            data = json.load(f)
-
-            return data["expiry"]
-
-    except:
-
-        return None
+# ===================== ADD THIS CLASS BEFORE WifiDialog =====================
 
 class ClickableLabel(QLabel):
 
@@ -152,7 +141,9 @@ class ClickableLabel(QLabel):
 
         super().mousePressEvent(event)
 
-
+# =========================================================
+# WIFI DIALOG
+# =========================================================
 
 class WifiDialog(QDialog):
 
@@ -453,7 +444,10 @@ class SetupMenuDialog(QDialog):
 
             self.parent_window.apply_colors()
             self.parent_window.save_settings()
-            
+# =========================================================
+# MAIN APPLICATION
+# =========================================================
+
 class SpeechToTextApp(QMainWindow):
 
     text_signal = pyqtSignal(str)
@@ -465,7 +459,9 @@ class SpeechToTextApp(QMainWindow):
         self.voice_detected_time = 0
         self.voice_active = False
         self.load_settings()
+
         self.labels = []
+
         self._rate = 16000
         self._chunk = int(self._rate / 10)
 
@@ -476,7 +472,7 @@ class SpeechToTextApp(QMainWindow):
 
         self._buff = queue.Queue()
 
-        self._is_connected = 0
+        self._is_connected = True
 
         self.text_signal.connect(self.append_text)
 
@@ -492,11 +488,6 @@ class SpeechToTextApp(QMainWindow):
         )
         
         self.init_main_ui()
-        self.subscription_retry_timer = QTimer(self)
-
-        self.subscription_retry_timer.timeout.connect(
-            self.retry_subscription_check
-        )
 
     def load_settings(self):
 
@@ -551,12 +542,12 @@ class SpeechToTextApp(QMainWindow):
 
         except Exception as e:
 
-            print("Settings Save Error:", e,flush=True)
+            print("Settings Save Error:", e)
 
     def init_main_ui(self):
 
         self.label = QLabel(
-            "Checking Subscription...",
+            "Press Button To Start Service Welcome to AudioSync ...",
             self
         )
 
@@ -603,7 +594,9 @@ class SpeechToTextApp(QMainWindow):
             else:
 
                 label = QLabel()
+
             pixmap = QPixmap(path)
+
             label.setPixmap(
                 pixmap.scaled(
                     130,
@@ -611,24 +604,35 @@ class SpeechToTextApp(QMainWindow):
                     Qt.KeepAspectRatio
                 )
             )
+
             label.setAlignment(Qt.AlignCenter)
+
             opacity_effect = QGraphicsOpacityEffect()
+
             label.setGraphicsEffect(opacity_effect)
+
             animation = QPropertyAnimation(
                 opacity_effect,
                 b"opacity"
             )
 
             animation.setDuration(200)
+
             animation.setStartValue(1.0)
+
             animation.setEndValue(0.0)
+
             animation.setEasingCurve(QEasingCurve.InOutQuad)
+
             self.labels.append(label)
+
             Hlayout.addWidget(label)
 
         layout.addLayout(Hlayout, stretch=2)
+
         layout.addWidget(scroll_area, stretch=8)
         self.container = QWidget(self)
+
         self.container.setSizePolicy(
             QSizePolicy.Expanding,
             QSizePolicy.Expanding
@@ -649,6 +653,7 @@ class SpeechToTextApp(QMainWindow):
             self._check_inactivity
         )
 
+        self._timer.start(1000)
 
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -662,9 +667,7 @@ class SpeechToTextApp(QMainWindow):
             interim_results=False
         )
 
-        QTimer.singleShot(1000,
-        self.verify_subscription_on_startup)
-
+        QTimer.singleShot(1000, self.wait_for_trigger)
         self.apply_colors()
     
     def open_setup_dialog(self):
@@ -677,52 +680,39 @@ class SpeechToTextApp(QMainWindow):
 
             setup_dialog.exec_()
 
+    # =========================================================
+    # OPEN WIFI WINDOW
+    # =========================================================
+
     def open_wifi_dialog(self):
 
         dialog = WifiDialog(self)
 
         dialog.exec_()
-    
-    def is_system_ready(self):
-
-        return (
-            self._is_connected and
-            self.subscription_status == 1
-        )
 
     def keyPressEvent(self, event):
+
         if event.key() == Qt.Key_Space:
 
-            if not self.is_system_ready():
+            print("[INFO] Keyboard Trigger Pressed")
 
-                print(
-                    "[BLOCKED] Internet/Subscription check not complete",
-                    flush=True
-                )
-
-                return
-
-            print("[INFO] Keyboard Trigger Pressed", flush=True)
+            self.text_signal.emit(
+                "[INFO] Listening Started From Keyboard..."
+            )
 
             self.start_audio_stream()
 
         super().keyPressEvent(event)
 
     def wait_for_trigger(self):
-        GPIO.output(led,True)
-        time.sleep(1)
-        GPIO.output(led,False)
-        time.sleep(1)
+
         if GPIO.input(button):
 
-            if not self.is_system_ready():
+            print("[INFO] Trigger Pressed")
 
-                print(
-                    "[BLOCKED] Internet/Subscription check not complete",
-                    flush=True
-                )
-
-                return
+            self.text_signal.emit(
+                "[INFO] Listening Started..."
+            )
 
             self.start_audio_stream()
 
@@ -731,23 +721,6 @@ class SpeechToTextApp(QMainWindow):
         QTimer.singleShot(100, self.wait_for_trigger)
 
     def start_audio_stream(self):
-        if not self._is_connected:
-
-            print(
-                "[BLOCKED] No Internet",
-                flush=True
-            )
-
-            return
-
-        if self.subscription_status != 1:
-
-            print(
-                "[BLOCKED] Subscription Invalid",
-                flush=True
-            )
-
-            return
 
         if self._is_listening:
             return
@@ -765,10 +738,6 @@ class SpeechToTextApp(QMainWindow):
         self._is_listening = True
 
         self._last_audio_time = time.time()
-        
-        if not self._timer.isActive():
-            self._timer.start(1000)
-
 
         self.listen_thread = Thread(
             target=self.start_listening
@@ -778,13 +747,13 @@ class SpeechToTextApp(QMainWindow):
 
         self.listen_thread.start()
 
-        print("[INFO] Listening Started",flush=True)
+        print("[INFO] Listening Started")
 
     def setup_audio(self):
 
         self._audio_interface = pyaudio.PyAudio()
 
-        print("\n========== AUDIO DEVICES ==========\n",flush=True)
+        print("\n========== AUDIO DEVICES ==========\n")
 
         for i in range(
             self._audio_interface.get_device_count()
@@ -794,7 +763,7 @@ class SpeechToTextApp(QMainWindow):
 
             print(i, info["name"])
 
-        print("\n===================================\n",flush=True)
+        print("\n===================================\n")
 
         self._audio_stream = self._audio_interface.open(
             format=pyaudio.paInt16,
@@ -809,8 +778,6 @@ class SpeechToTextApp(QMainWindow):
         self.closed = False
 
     def teardown_audio(self):
-        
-        self._timer.stop()
 
         try:
 
@@ -822,7 +789,7 @@ class SpeechToTextApp(QMainWindow):
 
         except Exception as e:
 
-            print("Teardown error:", e,flush=True)
+            print("Teardown error:", e)
 
         self.closed = True
 
@@ -857,7 +824,7 @@ class SpeechToTextApp(QMainWindow):
 
                 self.voice_active = True
 
-                print("[VOICE DETECTED]",flush=True)
+                print("[VOICE DETECTED]")
 
                 self.on_audio_detected()
 
@@ -908,7 +875,7 @@ class SpeechToTextApp(QMainWindow):
 
         connected = self.is_connected()
 
-        self._is_connected = 1
+        self._is_connected = connected
 
         pixmap_path = (
             "/opt/FinalCode/WifiTransmittingIcon.png"
@@ -926,243 +893,28 @@ class SpeechToTextApp(QMainWindow):
                 Qt.KeepAspectRatio
             )
         )
-    def update_expiry_from_github(self):
 
-        if not self.is_connected():
-            print("No Internet",flush=True)
-            return False
-
-        try:
-
-            url = (
-                "https://raw.githubusercontent.com/"
-                "krm9741/AudioSyncUpdates/main/subscriptions/"
-                f"{mac}.json"
-                f"?t={int(time.time())}"
-            )
-
-            print("Downloading:", url,flush=True)
-
-            response = requests.get(
-            url,
-            timeout=10,
-            headers={
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
-            },
-            verify=True
-            )
-
-            print("Status:", response.status_code,flush=True)
-            print("Content:", response.text,flush=True)
-
-            if response.status_code != 200:
-                return False
-
-            data = response.json()
-
-            print("Data Received:", data,flush=True)
-
-            with open(
-                "/opt/FinalCode/subscription.json",
-                "w"
-            ) as f:
-
-                json.dump(
-                    data,
-                    f,
-                    indent=4
-                )
-            response.close()
-            return True
-        except Exception as e:
-
-            print("Git Error:", e)
-            return False
-            
-    def checkforsubscription(self):
-
-        expiry_str = get_local_expiry()
-
-        if not expiry_str:
-            self.update_expiry_from_github()
-            expiry_str = get_local_expiry()
-
-            if not expiry_str:
-                return 3
-
-        today = datetime.now().date()
-        expiry_date = datetime.strptime(
-            expiry_str,
-            "%Y-%m-%d"
-        ).date()
-
-        # Still valid locally
-        if today <= expiry_date:
-            return 1
-
-        print("Local expiry reached",flush=True)
-
-        # Check online once
-        self.update_expiry_from_github()
-
-        expiry_str = get_local_expiry()
-
-        if not expiry_str:
-            return 2
-
-        expiry_date = datetime.strptime(
-            expiry_str,
-            "%Y-%m-%d"
-        ).date()
-
-        if today <= expiry_date:
-            return 1
-        return 2
-        
-        
-    def retry_subscription_check(self):
-
-        print("Checking GitHub for subscription update...")
-
-        # Force fresh download from GitHub
-        self.update_expiry_from_github()
-
-        result = self.checkforsubscription()
-
-        if result == 1:
-
-            print("Subscription Updated Successfully")
-
-            self.subscription_verified = True
-
-            self.subscription_retry_timer.stop()
-
-            if not self._timer.isActive():
-                self._timer.start(1000)
-
-            self.label.setText(
-                "Subscription Verified.\n\n"
-                "Press Button To Start Service "
-                "Welcome to AudioSync..."
-            )
-
-            self.wait_for_trigger()
-
-        elif result == 2:
-
-            print("Subscription still expired")
-
-        else:
-
-            print("Machine not registered")
-        
-    def verify_subscription_on_startup(self):
-        self.label.setText(
-            "Checking Subscription..."
-        )
-
-        QApplication.processEvents()
-
-        result = self.checkforsubscription()
-
-        if result == 1:
-
-            self.label.setText(
-                "Subscription Verified.\n\n"
-                "Press Button To Start Service "
-                "Welcome to AudioSync..."
-            )
-            self.subscription_status = 1
-
-            print("Subscription Verified",flush=True)
-            pixmap_path = (
-            "/opt/FinalCode/AudiaSyncIcon.png")
-            new_pixmap = QPixmap(pixmap_path)
-
-            self.labels[0].setPixmap(
-                new_pixmap.scaled(
-                    130,
-                    130,
-                    Qt.KeepAspectRatio
-                )
-            )
-            if not self._timer.isActive():
-                self._timer.start(1000)
-
-        elif result == 2:
-
-            self.subscription_status = 0
-            self.label.setText(
-                "Subscription Expired.\n\n"
-                "Please Re-Subscribe For Further Usage."
-            )
-            pixmap_path = (
-            "/opt/FinalCode/ExpiredAudiaSyncIcon.png"
-            )
-            new_pixmap = QPixmap(pixmap_path)
-
-            self.labels[0].setPixmap(
-                new_pixmap.scaled(
-                    130,
-                    130,
-                    Qt.KeepAspectRatio
-                )
-            )
-
-            print("Subscription Expired",flush=True)
-            
-            if not self.subscription_retry_timer.isActive():
-
-                self.subscription_retry_timer.start(60000)
-
-                print("Retry timer activated")
-
-        else:
-
-            self.subscription_status = 0
-            self.label.setText(
-                "Machine Not Registered.\n\n"
-                "Please Contact Support."
-            )
-            pixmap_path = (
-            "/opt/FinalCode/ExpiredAudiaSyncIcon.png"
-            )
-            new_pixmap = QPixmap(pixmap_path)
-
-            self.labels[0].setPixmap(
-                new_pixmap.scaled(
-                    130,
-                    130,
-                    Qt.KeepAspectRatio
-                )
-            )
-
-            print("Machine Not Registered",flush=True)
-        #self.subscription_status = result
-    
-        
     def _check_inactivity(self):
-        
-        if not self._is_listening:
-            return
 
         global inactivityduration
 
         elapsed = time.time() - self._last_audio_time
 
         print(
-            f"[DEBUG] No Audio Time: {elapsed:.2f} sec",flush=True
+            f"[DEBUG] No Audio Time: {elapsed:.2f} sec"
         )
 
         if self._is_listening and elapsed > inactivityduration:
 
             self.text_signal.emit(
-                "No speech detected for 5 minutes.")
+                "No speech detected for 5 minutes."
+            )
 
             self.text_signal.emit(
-                "Listening stopped.Press Button To Start Service Welcome to AudioSync...!")
-            print("[INFO] Auto Stop Listening",flush=True)
+                "Listening stopped.Press Trig To Start Service Welcome to AudioSync Pluto...!"
+            )
+
+            print("[INFO] Auto Stop Listening")
 
             self.teardown_audio()
 
@@ -1176,6 +928,7 @@ class SpeechToTextApp(QMainWindow):
         while not self.closed:
 
             try:
+
                 chunk = self._buff.get(timeout=1.0)
 
             except queue.Empty:
@@ -1190,31 +943,34 @@ class SpeechToTextApp(QMainWindow):
     def listen_print_loop(self, responses):
 
         for response in responses:
+
             if not response.results:
                 continue
+
             result = response.results[0]
+
             if not result.alternatives:
                 continue
-            print("Voice Found",flush=True)
-            self._last_audio_time = time.time()
-            if(self.subscription_status  == 1):
-                transcript = result.alternatives[0].transcript
-                print("Voice Converting to Text",flush=True)
-                if result.is_final:
-                    #current_text = self.label.text()
-                    #self.label.setText(current_text+"\n"+f"{transcript}")
-                    print(f"{transcript}")
-                    self.append_text(f"{transcript}")
-                    print("Txt printed")
-                    new_pixmap = QPixmap("/opt/FinalCode/MicIcon.png")
-                    self.labels[1].setPixmap(new_pixmap.scaled(130, 130, Qt.KeepAspectRatio))
-                else:
-                    self.append_text(f"{transcript}")
-                    print(f"Interim: {transcript}",flush=True)
-            elif(self.subscription_status  == 2):
-                self.append_text("Please re subscribe for further usage")
-            else:
-                self.append_text("Please register machine for further usage")
+
+            transcript = (
+                result.alternatives[0].transcript
+            )
+
+            if result.is_final:
+
+                print("TRANSCRIPT:", transcript)
+
+                self.text_signal.emit(transcript)
+
+                new_pixmap = QPixmap("/opt/FinalCode/MicIcon.png")
+
+                self.labels[1].setPixmap(
+                    new_pixmap.scaled(
+                        130,
+                        130,
+                        Qt.KeepAspectRatio
+                    )
+                )
 
     def start_listening(self):
 
@@ -1284,7 +1040,8 @@ class SpeechToTextApp(QMainWindow):
 
             QTimer.singleShot(
                 0,
-                self.scroll_to_bottom)
+                self.scroll_to_bottom
+            )
 
     def scroll_to_bottom(self):
 
@@ -1295,8 +1052,6 @@ class SpeechToTextApp(QMainWindow):
             scroll_area.verticalScrollBar().setValue(
                 scroll_area.verticalScrollBar().maximum()
             )
-    
-
 
 
 if __name__ == "__main__":
@@ -1316,4 +1071,3 @@ if __name__ == "__main__":
         traceback.print_exc()
 
         input("Press Enter...")
-
